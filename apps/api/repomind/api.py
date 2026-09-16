@@ -215,13 +215,19 @@ def query(repository_id: uuid.UUID, payload: QueryRequest, db: Session = Depends
         session = db.get(QuerySession, payload.session_id)
         if session is None or session.repository_id != repository_id:
             raise ApiError(404, "SESSION_NOT_FOUND", "Session was not found for this repository.")
+        previous = db.scalar(select(Message).where(Message.session_id == session.id,
+                                                   Message.role == "user")
+                             .order_by(Message.created_at.desc()).limit(1))
     else:
         session = QuerySession(repository_id=repo.id)
         db.add(session)
         db.flush()
+        previous = None
+    contextual_question = (f"Previous question: {previous.content[:1000]}\nFollow-up: {payload.question}"
+                           if previous else payload.question)
     try:
-        evidence, metadata = retrieve(db, snapshot, payload.question, payload.top_k, embeddings, settings)
-        generated = valid_citations(answer_provider(settings).generate(payload.question, evidence), evidence)
+        evidence, metadata = retrieve(db, snapshot, contextual_question, payload.top_k, embeddings, settings)
+        generated = valid_citations(answer_provider(settings).generate(contextual_question, evidence), evidence)
     except ValueError as exc:
         raise ApiError(503, "PROVIDER_NOT_CONFIGURED", str(exc)) from exc
     except Exception as exc:

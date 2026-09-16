@@ -150,12 +150,16 @@ class GeminiAnswer:
         data = response.json()
         raw = data["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(raw)
-        return GeneratedAnswer(str(parsed["answer"]), list(parsed.get("citations", [])))
+        ids = parsed.get("citations", [])
+        if not isinstance(ids, list):
+            ids = []
+        return GeneratedAnswer(str(parsed["answer"]), [id_ for id_ in ids if isinstance(id_, str)])
 
 
 def valid_citations(generated: GeneratedAnswer, evidence: list[Evidence]) -> GeneratedAnswer:
     allowed = {item.citation_id for item in evidence}
-    ids = list(dict.fromkeys(id_ for id_ in generated.citation_ids if id_ in allowed))
+    ids = list(dict.fromkeys(id_ for id_ in generated.citation_ids
+                             if isinstance(id_, str) and id_ in allowed))
     answer = re.sub(r"\[([A-Za-z0-9_-]+)\]", lambda m: m.group(0) if m.group(1) in ids else "",
                     generated.answer)
     return GeneratedAnswer(answer, ids)

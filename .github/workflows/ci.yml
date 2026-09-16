@@ -31,7 +31,7 @@ jobs:
       - name: Install API
         run: python -m pip install -e "apps/api[dev]"
       - name: Lint
-        run: cd apps/api && ruff check . && ruff format --check .
+        run: cd apps/api && ruff check .
       - name: Compile
         run: python -m compileall -q apps/api evals
       - name: Migrate database

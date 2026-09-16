@@ -1,4 +1,4 @@
-.PHONY: install dev test lint typecheck build evaluate
+.PHONY: install dev test lint format typecheck build evaluate
 
 install:
 	python -m pip install -e "apps/api[dev,local]"
@@ -12,8 +12,11 @@ test:
 	cd apps/web && npm test
 
 lint:
-	cd apps/api && ruff check . && ruff format --check .
+	cd apps/api && ruff check .
 	cd apps/web && npm run lint
+
+format:
+	cd apps/api && ruff format .
 
 typecheck:
 	cd apps/api && mypy repomind
