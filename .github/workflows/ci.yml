@@ -50,6 +50,8 @@ jobs:
           node-version: "22"
       - name: Install web
         run: cd apps/web && npm install --no-audit --no-fund
+      - name: Audit production dependencies
+        run: cd apps/web && npm audit --omit=dev --audit-level=high
       - name: Lint and typecheck
         run: cd apps/web && npm run lint && npm run typecheck
       - name: Component tests
