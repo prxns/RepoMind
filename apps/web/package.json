@@ -12,20 +12,20 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "next": "15.5.24",
+    "next": "16.3.5",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.1",
-    "@playwright/test": "1.51.1",
+    "@playwright/test": "1.63.0",
     "@testing-library/react": "16.3.0",
     "@testing-library/jest-dom": "6.6.3",
     "@types/node": "22.14.0",
     "@types/react": "19.0.12",
     "@types/react-dom": "19.0.4",
     "eslint": "9.24.0",
-    "eslint-config-next": "15.5.24",
+    "eslint-config-next": "16.3.5",
     "jsdom": "26.1.0",
     "typescript": "5.8.3",
     "vitest": "3.1.1"
