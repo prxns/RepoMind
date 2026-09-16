@@ -73,9 +73,11 @@ def run_job(job_id: uuid.UUID, settings: Settings, github: GithubClient | None =
             _status(db, job, None, "FETCHING")
             ref = job.progress_json["ref"]
             commit_sha, tree = github.snapshot_tree(repo.owner, repo.name, ref)
-            eligible = [(item, supported_file(item.path, item.size, settings.max_file_bytes))
-                        for item in tree]
-            eligible = [(item, language) for item, language in eligible if language]
+            eligible = []
+            for item in tree:
+                language = supported_file(item.path, item.size, settings.max_file_bytes)
+                if language:
+                    eligible.append((item, language))
             if len(eligible) > settings.max_files or sum(item.size for item, _ in eligible) > settings.max_total_bytes:
                 raise GithubError("REPOSITORY_TOO_LARGE", "Repository exceeds configured indexing limits.")
             identity = fingerprint(repo.full_name, ref, commit_sha, "chunk-v1", settings.embedding_model)

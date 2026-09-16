@@ -4,7 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -80,7 +80,7 @@ class TokenOverlapReranker:
 class CrossEncoderReranker:
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self._model = None
+        self._model: Any = None
 
     def rank(self, question: str, candidates: list) -> list:
         if not candidates:
