@@ -9,6 +9,16 @@ const examples = [
   "How are API errors returned?",
 ];
 
+function lastWorkspace(): { repositoryId: string | null; sessionId: string | null } {
+  if (typeof window === "undefined") return { repositoryId: null, sessionId: null };
+  try {
+    const saved = localStorage.getItem("repomind:last");
+    return saved ? JSON.parse(saved) : { repositoryId: null, sessionId: null };
+  } catch {
+    return { repositoryId: null, sessionId: null };
+  }
+}
+
 function ErrorNotice({ message }: { message: string }) {
   return <div className="error" role="alert"><strong>Request failed</strong><span>{message}</span></div>;
 }
@@ -47,28 +57,17 @@ function SourcePanel({ citation, repositoryId }: { citation: Citation; repositor
 export default function Home() {
   const [url, setUrl] = useState("");
   const [ref, setRef] = useState("");
-  const [repositoryId, setRepositoryId] = useState<string | null>(null);
+  const [repositoryId, setRepositoryId] = useState<string | null>(() => lastWorkspace().repositoryId);
   const [repository, setRepository] = useState<Repository | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [ingestion, setIngestion] = useState<Ingestion | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(() => lastWorkspace().sessionId);
   const [history, setHistory] = useState<HistoryMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<QueryAnswer | null>(null);
   const [debug, setDebug] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    const saved = localStorage.getItem("repomind:last");
-    if (saved) {
-      try {
-        const state = JSON.parse(saved) as { repositoryId: string; sessionId: string | null };
-        setRepositoryId(state.repositoryId);
-        setSessionId(state.sessionId);
-      } catch { localStorage.removeItem("repomind:last"); }
-    }
-  }, []);
 
   useEffect(() => {
     if (!repositoryId) return;
