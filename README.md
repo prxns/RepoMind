@@ -39,7 +39,7 @@ The API is at `http://localhost:8000/api/v1`; OpenAPI docs are at `http://localh
 For host development, start only the database with `docker compose up -d db`, then:
 
 ```bash
-python -m pip install -e "apps/api[dev]"
+python -m pip install -e "apps/api[dev,local]"
 cd apps/api
 alembic upgrade head
 uvicorn repomind.api:app --reload

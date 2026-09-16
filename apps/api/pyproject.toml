@@ -15,11 +15,11 @@ dependencies = [
   "alembic==1.15.2",
   "pydantic-settings==2.8.1",
   "httpx==0.28.1",
-  "sentence-transformers==4.1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.5", "ruff==0.11.4", "mypy==1.15.0", "httpx==0.28.1"]
+local = ["sentence-transformers==4.1.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

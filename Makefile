@@ -1,7 +1,7 @@
 .PHONY: install dev test lint typecheck build evaluate
 
 install:
-	python -m pip install -e "apps/api[dev]"
+	python -m pip install -e "apps/api[dev,local]"
 	cd apps/web && npm install
 
 dev:
