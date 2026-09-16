@@ -1,0 +1,33 @@
+{
+  "name": "repomind-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "next": "15.3.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "3.3.1",
+    "@playwright/test": "1.51.1",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/jest-dom": "6.6.3",
+    "@types/node": "22.14.0",
+    "@types/react": "19.0.12",
+    "@types/react-dom": "19.0.4",
+    "eslint": "9.24.0",
+    "eslint-config-next": "15.3.0",
+    "jsdom": "26.1.0",
+    "typescript": "5.8.3",
+    "vitest": "3.1.1"
+  }
+}
