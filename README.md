@@ -3,6 +3,7 @@
 RepoMind indexes a public GitHub repository and answers questions with links to the source lines used as evidence. It combines PostgreSQL full-text search with pgvector similarity, then reranks and packs the retrieved chunks before answering. The default local answer mode is extractive and needs no model API key. A Gemini provider can be enabled for prose answers.
 
 See [implementation architecture](docs/ARCHITECTURE.md) and the [reference specifications](docs/spec/01-PRD.md).
+For changes to this repository, follow the [pull request and CI policy](CONTRIBUTING.md).
 
 ## Architecture
 
