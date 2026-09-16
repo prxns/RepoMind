@@ -19,7 +19,7 @@ format:
 	cd apps/api && ruff format .
 
 typecheck:
-	cd apps/api && mypy repomind
+	cd apps/api && mypy repomind --ignore-missing-imports
 	cd apps/web && npm run typecheck
 
 build:

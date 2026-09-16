@@ -92,7 +92,7 @@ Errors contain a code, message, retryability flag, and request ID. Query respons
 ## Test and evaluate
 
 ```bash
-cd apps/api && pytest -q && ruff check .
+cd apps/api && pytest -q && ruff check . && mypy repomind --ignore-missing-imports
 cd apps/web && npm test && npm run lint && npm run typecheck && npm run build
 ```
 

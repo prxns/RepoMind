@@ -32,8 +32,12 @@ jobs:
         run: python -m pip install -e "apps/api[dev]"
       - name: Lint
         run: cd apps/api && ruff check .
+      - name: Typecheck
+        run: cd apps/api && mypy repomind --ignore-missing-imports
       - name: Compile
         run: python -m compileall -q apps/api evals
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
       - name: Migrate database
         run: cd apps/api && alembic upgrade head
       - name: Test
