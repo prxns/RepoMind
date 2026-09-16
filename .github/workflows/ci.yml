@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: repomind
+          POSTGRES_USER: repomind
+          POSTGRES_PASSWORD: repomind
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U repomind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://repomind:repomind@localhost:5432/repomind
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install API
+        run: python -m pip install -e "apps/api[dev]"
+      - name: Lint
+        run: cd apps/api && ruff check . && ruff format --check .
+      - name: Compile
+        run: python -m compileall -q apps/api evals
+      - name: Migrate database
+        run: cd apps/api && alembic upgrade head
+      - name: Test
+        run: cd apps/api && pytest -q
+      - name: Evaluation metric tests
+        run: python -m unittest discover -s evals -p test_metrics.py
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install web
+        run: cd apps/web && npm install --no-audit --no-fund
+      - name: Lint and typecheck
+        run: cd apps/web && npm run lint && npm run typecheck
+      - name: Component tests
+        run: cd apps/web && npm test
+      - name: Build
+        run: cd apps/web && npm run build
+      - name: Browser test
+        run: cd apps/web && npx playwright install --with-deps chromium && npm run test:e2e
