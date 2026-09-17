@@ -1,24 +1,27 @@
+# Standalone public deployment: only the HTTPS gateway publishes ports.
 services:
   db:
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: repomind
       POSTGRES_USER: repomind
-      POSTGRES_PASSWORD: repomind
-    ports:
-      - "127.0.0.1:5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the production environment file}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U repomind"]
       interval: 5s
+      timeout: 5s
       retries: 10
+    restart: unless-stopped
+
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
     environment:
-      DATABASE_URL: postgresql+psycopg://repomind:repomind@db:5432/repomind
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set the URL for the production database service}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-extractive}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -27,7 +30,7 @@ services:
       EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
       RERANKER_PROVIDER: ${RERANKER_PROVIDER:-token_overlap}
       RERANKER_MODEL: ${RERANKER_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${PUBLIC_ORIGIN:?Set the HTTPS origin for the production site}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
       GLOBAL_RATE_LIMIT_PER_MINUTE: ${GLOBAL_RATE_LIMIT_PER_MINUTE:-120}
       MAX_ACTIVE_INGESTIONS: ${MAX_ACTIVE_INGESTIONS:-8}
@@ -36,21 +39,43 @@ services:
       MAX_FILE_BYTES: ${MAX_FILE_BYTES:-524288}
       MAX_TOTAL_BYTES: ${MAX_TOTAL_BYTES:-26214400}
       MAX_CHUNKS: ${MAX_CHUNKS:-25000}
-    ports:
-      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
-    command: sh -c "alembic upgrade head && uvicorn repomind.api:app --host 0.0.0.0 --port 8000"
+    # Only the gateway can reach this container; it replaces untrusted forwarded headers.
+    command: sh -c "alembic upgrade head && uvicorn repomind.api:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"
+    restart: unless-stopped
+
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
-    ports:
-      - "127.0.0.1:3000:3000"
+        NEXT_PUBLIC_API_BASE_URL: /api/v1
     depends_on:
       - api
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set the public DNS name}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?Set the gateway username}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?Set the hashed gateway password}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
