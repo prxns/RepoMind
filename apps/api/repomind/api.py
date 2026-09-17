@@ -1,11 +1,9 @@
 """Versioned HTTP API for repository ingestion and grounded queries."""
 
 import asyncio
-import time
 import uuid
-from collections import defaultdict, deque
 from datetime import datetime, timezone
-from threading import Lock
+from threading import BoundedSemaphore
 from urllib.parse import quote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request
@@ -13,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -21,6 +19,7 @@ from repomind.config import get_settings
 from repomind.db import SessionLocal, check_ready, get_db
 from repomind.github import GithubClient, GithubError
 from repomind.ingestion import run_job
+from repomind.limits import PostRateLimiter
 from repomind.models import IngestionJob, Message, QuerySession, Repository, Snapshot, SourceFile
 from repomind.providers import LocalEmbedding, answer_provider, valid_citations
 from repomind.retrieval import retrieve
@@ -31,17 +30,17 @@ settings = get_settings()
 app = FastAPI(title="RepoMind API", version="0.1.0", description="Repository-aware search and answers")
 app.add_middleware(CORSMiddleware, allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
                    allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID"])
-rate_windows: dict[str, deque[float]] = defaultdict(deque)
-rate_lock = Lock()
+rate_limiter = PostRateLimiter(settings.rate_limit_per_minute, settings.global_rate_limit_per_minute)
+query_slots = BoundedSemaphore(settings.max_concurrent_queries)
 embeddings = LocalEmbedding(settings.embedding_model)
+ACTIVE_JOBS = ("PENDING", "FETCHING", "PARSING", "EMBEDDING", "INDEXING")
 
 
 @app.on_event("startup")
 async def restart_interrupted_jobs() -> None:
     try:
         with SessionLocal() as db:
-            jobs = db.scalars(select(IngestionJob).where(IngestionJob.status.in_(
-                ["PENDING", "FETCHING", "PARSING", "EMBEDDING", "INDEXING"]))).all()
+            jobs = db.scalars(select(IngestionJob).where(IngestionJob.status.in_(ACTIVE_JOBS))).all()
             ids = [job.id for job in jobs]
     except SQLAlchemyError:
         return
@@ -98,17 +97,13 @@ def _error(request: Request, status: int, code: str, message: str, retryable: bo
 async def request_context(request: Request, call_next):
     request.state.request_id = str(uuid.uuid4())
     if request.method == "POST":
-        key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
-        now = time.monotonic()
-        with rate_lock:
-            window = rate_windows[key]
-            while window and window[0] <= now - 60:
-                window.popleft()
-            if len(window) >= settings.rate_limit_per_minute:
-                response = _error(request, 429, "RATE_LIMITED", "Too many requests. Try again shortly.", True)
-                response.headers["X-Request-ID"] = request.state.request_id
-                return response
-            window.append(now)
+        # The socket peer is stable across paths and malformed Host values. A trusted
+        # reverse proxy must supply its own admission control for multiple API replicas.
+        client = request.client.host if request.client else "unknown"
+        if not rate_limiter.allow(client):
+            response = _error(request, 429, "RATE_LIMITED", "Too many requests. Try again shortly.", True)
+            response.headers["X-Request-ID"] = request.state.request_id
+            return response
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
     return response
@@ -157,7 +152,19 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, db: Session = De
         status = 429 if exc.code == "GITHUB_RATE_LIMITED" else 404 if exc.code == "REPOSITORY_NOT_FOUND" else 502
         raise ApiError(status, exc.code, str(exc), exc.retryable) from exc
     full_name = remote["full_name"]
+    # Serialize admission across API processes before counting or inserting jobs.
+    db.execute(text("SELECT pg_advisory_xact_lock(84238012)"))
     repo = db.scalar(select(Repository).where(Repository.full_name == full_name))
+    if repo is not None:
+        existing = db.scalar(select(IngestionJob).where(
+            IngestionJob.repository_id == repo.id, IngestionJob.status.in_(ACTIVE_JOBS))
+            .order_by(IngestionJob.created_at.desc()).limit(1))
+        if existing:
+            db.rollback()
+            return {"job_id": existing.id, "repository_id": repo.id, "status": existing.status}
+    active = db.scalar(select(func.count(IngestionJob.id)).where(IngestionJob.status.in_(ACTIVE_JOBS)))
+    if active is not None and active >= settings.max_active_ingestions:
+        raise ApiError(429, "INGESTION_CAPACITY", "Indexing capacity is full. Try again later.", True)
     if repo is None:
         repo = Repository(owner=owner, name=name, full_name=full_name,
                           default_branch=remote["default_branch"],
@@ -203,6 +210,15 @@ def ingestion(job_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/repositories/{repository_id}/query", tags=["query"])
 def query(repository_id: uuid.UUID, payload: QueryRequest, db: Session = Depends(get_db)):
+    if not query_slots.acquire(blocking=False):
+        raise ApiError(429, "QUERY_CAPACITY", "Question capacity is full. Try again later.", True)
+    try:
+        return _query(repository_id, payload, db)
+    finally:
+        query_slots.release()
+
+
+def _query(repository_id: uuid.UUID, payload: QueryRequest, db: Session):
     repo = db.get(Repository, repository_id)
     if repo is None:
         raise ApiError(404, "REPOSITORY_NOT_FOUND", "Repository was not found.")

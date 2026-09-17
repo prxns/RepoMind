@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from repomind.config import Settings
@@ -59,11 +59,31 @@ def _copy_unchanged(db: Session, repository_id: uuid.UUID, snapshot: Snapshot,
 def run_job(job_id: uuid.UUID, settings: Settings, github: GithubClient | None = None,
             embeddings: EmbeddingProvider | None = None,
             session_factory=SessionLocal) -> None:
+    """Hold one PostgreSQL session lock per repository across status commits."""
+    with session_factory() as lookup:
+        job = lookup.get(IngestionJob, job_id)
+        if job is None:
+            return
+        repository_id = job.repository_id
+        bind = lookup.get_bind()
+    lock_key = int.from_bytes(repository_id.bytes[:8], "big", signed=True)
+    with bind.connect() as lock_connection:
+        lock_connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
+        lock_connection.commit()
+        try:
+            _run_job_locked(job_id, settings, github, embeddings, session_factory)
+        finally:
+            lock_connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+            lock_connection.commit()
+
+
+def _run_job_locked(job_id: uuid.UUID, settings: Settings, github: GithubClient | None,
+                    embeddings: EmbeddingProvider | None, session_factory) -> None:
     github = github or GithubClient(settings)
     embeddings = embeddings or LocalEmbedding(settings.embedding_model)
     with session_factory() as db:
         job = db.get(IngestionJob, job_id)
-        if job is None:
+        if job is None or job.status in {"COMPLETED", "FAILED"}:
             return
         repo = db.get(Repository, job.repository_id)
         if repo is None:
