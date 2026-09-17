@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +19,10 @@ class Settings(BaseSettings):
     reranker_provider: str = "token_overlap"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     cors_origins: str = "http://localhost:3000"
-    rate_limit_per_minute: int = 30
+    rate_limit_per_minute: int = Field(default=30, ge=1)
+    global_rate_limit_per_minute: int = Field(default=120, ge=1)
+    max_active_ingestions: int = Field(default=8, ge=1)
+    max_concurrent_queries: int = Field(default=4, ge=1)
     max_files: int = 5000
     max_file_bytes: int = 524288
     max_total_bytes: int = 26214400
