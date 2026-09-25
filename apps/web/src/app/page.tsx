@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { api, ApiFailure, Citation, HistoryMessage, Ingestion, QueryAnswer, Repository } from "@/lib/api";
+import { api, ApiFailure, Citation, GenerationStatus, HistoryMessage, Ingestion, QueryAnswer, Repository } from "@/lib/api";
 
 const examples = [
   "Where is authentication implemented?",
@@ -21,6 +21,19 @@ function lastWorkspace(): { repositoryId: string | null; sessionId: string | nul
 
 function ErrorNotice({ message }: { message: string }) {
   return <div className="error" role="alert"><strong>Request failed</strong><span>{message}</span></div>;
+}
+
+export function GenerationNotice({ generation }: { generation: GenerationStatus }) {
+  const labels: Record<GenerationStatus["mode"], string> = {
+    ai: "PRIMARY PROVIDER",
+    fallback_ai: "FALLBACK PROVIDER",
+    deterministic: "GROUNDED FALLBACK",
+    insufficient_evidence: "EVIDENCE GATE",
+  };
+  return <div className={`generation-notice generation-${generation.mode}`} role="status" data-generation-mode={generation.mode}>
+    <span>{labels[generation.mode]}</span>
+    <p>{generation.notice}</p>
+  </div>;
 }
 
 function SourcePanel({ citation, repositoryId }: { citation: Citation; repositoryId: string }) {
@@ -83,7 +96,14 @@ export default function Home() {
       setHistory(result.messages);
       const last = [...result.messages].reverse().find(message => message.role === "assistant");
       if (last) setAnswer({ answer: last.content, citations: last.citations,
-        retrieval: last.retrieval, session_id: result.session_id });
+        retrieval: last.retrieval,
+        generation: last.generation ?? {
+          provider_attempted: [], provider_selected: null, provider_label: "Unknown",
+          mode: "deterministic", fallback_occurred: false, failures: [], latency_ms: 0,
+          notice: "Provider details were not recorded for this saved response.",
+        },
+        timings: last.timings ?? { retrieval_ms: last.retrieval.latency_ms, generation_ms: 0,
+          total_ms: last.retrieval.latency_ms }, session_id: result.session_id });
     }).catch(() => setSessionId(null));
   }, [sessionId]);
 
@@ -136,8 +156,10 @@ export default function Home() {
       const result = await api.query(repositoryId, question.trim(), sessionId, debug);
       setAnswer(result);
       setHistory(items => [...items,
-        { role: "user", content: question.trim(), citations: [], retrieval: result.retrieval, created_at: new Date().toISOString() },
-        { role: "assistant", content: result.answer, citations: result.citations, retrieval: result.retrieval, created_at: new Date().toISOString() },
+        { role: "user", content: question.trim(), citations: [], retrieval: result.retrieval,
+          generation: null, timings: null, created_at: new Date().toISOString() },
+        { role: "assistant", content: result.answer, citations: result.citations, retrieval: result.retrieval,
+          generation: result.generation, timings: result.timings, created_at: new Date().toISOString() },
       ]);
       setSessionId(result.session_id);
       localStorage.setItem("repomind:last", JSON.stringify({ repositoryId, sessionId: result.session_id }));
@@ -194,7 +216,15 @@ export default function Home() {
         <div className="history-list">{history.map((message, index) => message.role === "user" ? <button type="button" key={`${index}-${message.created_at}`} title={message.content} onClick={() => {
           const response = history[index + 1];
           if (response?.role === "assistant") setAnswer({ answer: response.content, citations: response.citations,
-            retrieval: response.retrieval, session_id: sessionId || "" });
+            retrieval: response.retrieval,
+            generation: response.generation ?? {
+              provider_attempted: [], provider_selected: null, provider_label: "Unknown",
+              mode: "deterministic", fallback_occurred: false, failures: [], latency_ms: 0,
+              notice: "Provider details were not recorded for this saved response.",
+            },
+            timings: response.timings ?? { retrieval_ms: response.retrieval.latency_ms,
+              generation_ms: 0, total_ms: response.retrieval.latency_ms },
+            session_id: sessionId || "" });
         }}>{message.content}</button> : null)}</div>
         <div className="sidebar-foot"><span className="connection-dot" /> Index ready</div>
       </aside>
@@ -209,10 +239,11 @@ export default function Home() {
         {!answer && history.length === 0 && <section className="suggestions"><h2>Start with a question</h2><p>Answers cite the indexed files used as evidence.</p><div>{examples.map(example => <button type="button" key={example} onClick={() => setQuestion(example)}>{example}<span>→</span></button>)}</div></section>}
         {answer && <section className="answer-section" aria-live="polite">
           <div className="section-label"><span>ANSWER</span><span>GROUNDED IN {answer.citations.length} SOURCE{answer.citations.length === 1 ? "" : "S"}</span></div>
+          <GenerationNotice generation={answer.generation} />
           <div className="answer-text">{answer.answer}</div>
           <div className="sources-heading"><h2>Sources</h2><span>{answer.citations.length} references</span></div>
-          {answer.citations.length ? answer.citations.map(citation => <SourcePanel key={citation.id} citation={citation} repositoryId={repositoryId!} />) : <p className="muted">No source citation was returned.</p>}
-          {debug && <details className="retrieval-details"><summary>Retrieval details</summary><dl><div><dt>Dense candidates</dt><dd>{answer.retrieval.dense_candidates}</dd></div><div><dt>Lexical candidates</dt><dd>{answer.retrieval.lexical_candidates}</dd></div><div><dt>Fused candidates</dt><dd>{answer.retrieval.fused_candidates}</dd></div><div><dt>Reranked candidates</dt><dd>{answer.retrieval.reranked_candidates}</dd></div><div><dt>Latency</dt><dd>{answer.retrieval.latency_ms} ms</dd></div></dl></details>}
+          {answer.citations.length ? answer.citations.map(citation => <SourcePanel key={citation.id} citation={citation} repositoryId={repositoryId!} />) : <p className="muted">{answer.generation.mode === "insufficient_evidence" ? "No citations were returned because the evidence gate stopped generation." : "No source citation was returned."}</p>}
+          {debug && <details className="retrieval-details"><summary>Retrieval and generation details</summary><dl><div><dt>Provider</dt><dd>{answer.generation.provider_selected ?? "not called"}</dd></div><div><dt>Dense candidates</dt><dd>{answer.retrieval.dense_candidates}</dd></div><div><dt>Lexical candidates</dt><dd>{answer.retrieval.lexical_candidates}</dd></div><div><dt>Fused candidates</dt><dd>{answer.retrieval.fused_candidates}</dd></div><div><dt>Reranked candidates</dt><dd>{answer.retrieval.reranked_candidates}</dd></div><div><dt>Evidence gate</dt><dd>{answer.retrieval.evidence_gate?.sufficient ? "passed" : "stopped"}</dd></div><div><dt>Retrieval</dt><dd>{answer.timings.retrieval_ms} ms</dd></div><div><dt>Generation</dt><dd>{answer.timings.generation_ms} ms</dd></div><div><dt>Total</dt><dd>{answer.timings.total_ms} ms</dd></div></dl></details>}
         </section>}
       </main>
     </div>}

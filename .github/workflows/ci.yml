@@ -36,6 +36,8 @@ jobs:
         run: cd apps/api && mypy repomind --ignore-missing-imports
       - name: Compile
         run: python -m compileall -q apps/api evals
+      - name: Scan for committed secrets
+        run: python scripts/check_secrets.py
       - name: Validate Compose configuration
         run: docker compose config --quiet
       - name: Validate production Compose configuration

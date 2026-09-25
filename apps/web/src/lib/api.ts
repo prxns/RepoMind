@@ -30,6 +30,23 @@ export type Repository = {
   latest_ref: string | null;
 };
 
+export type GenerationStatus = {
+  provider_attempted: string[];
+  provider_selected: string | null;
+  provider_label: string;
+  mode: "ai" | "fallback_ai" | "deterministic" | "insufficient_evidence";
+  fallback_occurred: boolean;
+  failures: { provider: string; category: string; transient: boolean }[];
+  latency_ms: number;
+  notice: string;
+};
+
+export type QueryTimings = {
+  retrieval_ms: number;
+  generation_ms: number;
+  total_ms: number;
+};
+
 export type QueryAnswer = {
   answer: string;
   citations: Citation[];
@@ -40,7 +57,18 @@ export type QueryAnswer = {
     reranked_candidates: number;
     latency_ms: number;
     sources: { path: string; start_line: number; end_line: number; score: number }[];
+    evidence_gate: {
+      sufficient: boolean;
+      reason: string;
+      score: number;
+      matched_query_terms: number;
+      query_term_count: number;
+      positive_signal_count: number;
+      signals: Record<string, number>;
+    };
   };
+  generation: GenerationStatus;
+  timings: QueryTimings;
   session_id: string;
 };
 
@@ -49,6 +77,8 @@ export type HistoryMessage = {
   content: string;
   citations: Citation[];
   retrieval: QueryAnswer["retrieval"];
+  generation: GenerationStatus | null;
+  timings: QueryTimings | null;
   created_at: string;
 };
 

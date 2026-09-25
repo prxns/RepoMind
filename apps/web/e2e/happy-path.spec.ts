@@ -10,7 +10,7 @@ test("index a repository and inspect a cited answer", async ({ page }) => {
         : path.endsWith("/repositories/repo")
           ? { id: "repo", full_name: "owner/repo", default_branch: "main", latest_ref: "main", description: null, html_url: "https://github.com/owner/repo", latest_ingestion: "COMPLETED" }
           : path.endsWith("/repositories/repo/query")
-            ? { answer: "Login is in auth.py [S1].", session_id: "session", citations: [{ id: "S1", source_id: "source", file_path: "src/auth.py", start_line: 1, end_line: 2, snippet: "def login():", score: 0.9, url: "https://github.com/owner/repo/blob/sha/src/auth.py#L1-L2" }], retrieval: { dense_candidates: 1, lexical_candidates: 1, fused_candidates: 1, reranked_candidates: 1, latency_ms: 2, sources: [] } }
+            ? { answer: "The strongest matching evidence is in `src/auth.py` (lines 1–2). The cited section defines the function `login` and shows: “def login(): pass” [S1].", session_id: "session", citations: [{ id: "S1", source_id: "source", file_path: "src/auth.py", start_line: 1, end_line: 2, snippet: "def login():", score: 0.9, url: "https://github.com/owner/repo/blob/sha/src/auth.py#L1-L2" }], retrieval: { dense_candidates: 1, lexical_candidates: 1, fused_candidates: 1, reranked_candidates: 1, latency_ms: 2, sources: [], evidence_gate: { sufficient: true, reason: "sufficient", score: 0.9, matched_query_terms: 1, query_term_count: 1, positive_signal_count: 4, signals: {} } }, generation: { provider_attempted: ["gemini-3.8-flash", "gemini-3.7-flash"], provider_selected: "deterministic-grounded", provider_label: "RepoMind grounded fallback", mode: "deterministic", fallback_occurred: true, failures: [{ provider: "gemini-3.8-flash", category: "temporarily_unavailable", transient: true }, { provider: "gemini-3.7-flash", category: "temporarily_unavailable", transient: true }], latency_ms: 3, notice: "Gemini 3.8 Flash and Gemini 3.7 Flash are temporarily unavailable. This response uses RepoMind's grounded fallback mode." }, timings: { retrieval_ms: 2, generation_ms: 3, total_ms: 5 } }
             : path.endsWith("/sessions/session")
               ? { session_id: "session", repository_id: "repo", messages: [] }
               : { file_path: "src/auth.py", start_line: 1, end_line: 2, content: "def login():\n    pass" };
@@ -22,7 +22,11 @@ test("index a repository and inspect a cited answer", async ({ page }) => {
   await expect(page.getByText("Explore the codebase")).toBeVisible();
   await page.getByLabel("Ask a question about this repository").fill("Where is login?");
   await page.getByRole("button", { name: "Ask question" }).click();
-  await expect(page.getByText("Login is in auth.py [S1].")).toBeVisible();
+  await expect(page.getByText(/The strongest matching evidence is in/)).toBeVisible();
+  await expect(page.getByText("Gemini 3.8 Flash and Gemini 3.7 Flash are temporarily unavailable. This response uses RepoMind's grounded fallback mode.")).toBeVisible();
   await page.getByRole("button", { name: /src\/auth.py/ }).click();
-  await expect(page.getByText("def login():")).toBeVisible();
+  await expect(page.locator("code")).toContainText("def login():");
+  if (process.env.CAPTURE_SCREENSHOT === "1") {
+    await page.screenshot({ path: "../../docs/screenshots/repomind-workspace.png", fullPage: true });
+  }
 });

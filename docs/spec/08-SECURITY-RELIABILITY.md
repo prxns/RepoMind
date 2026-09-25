@@ -19,6 +19,8 @@ Treat repository content, user questions, GitHub responses, and model output as 
 13. Use bounded retries with exponential backoff for upstream services.
 14. Respect upstream Retry-After headers when available.
 15. Fail closed for invalid citation IDs.
+16. Classify provider errors without retaining or returning raw response bodies.
+17. Run the repository secret-pattern check in CI.
 
 ## Prompt-injection defense
 Repository files may contain text such as “ignore previous instructions.” That content is **data**, not instructions. The answer-generation prompt must explicitly state this.
@@ -44,6 +46,15 @@ These are defaults, not arbitrary hard requirements; they should be configurable
 Every ingestion job must be resumable or safely restartable. Partial failure must not leave a repository marked `COMPLETED`.
 
 Use database transactions for metadata/index writes where feasible.
+
+## Generation degradation
+Generation attempts use this fixed order: Gemini 3.8 Flash, Gemini 3.7 Flash,
+then the deterministic grounded fallback. The hosted providers receive one
+bounded attempt each. Transient failures advance through the chain. Shared
+authentication and malformed-request failures stop further hosted attempts;
+model-specific failures may advance to the next configured model. Safe failure
+categories and provider selection are stored with query metadata. The
+deterministic fallback is evidence-only and does not use a local model.
 
 ## Privacy
 Public repository data is public-source data, but still avoid unnecessary retention. Add a delete repository action in the data layer even if not exposed in MVP UI.

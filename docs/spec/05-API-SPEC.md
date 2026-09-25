@@ -53,6 +53,27 @@ Request:
 
 Response `200`: see SDS response contract.
 
+The response also includes safe generation and timing metadata:
+```json
+{
+  "generation": {
+    "provider_attempted": ["gemini-3.8-flash", "gemini-3.7-flash"],
+    "provider_selected": "deterministic-grounded",
+    "mode": "deterministic",
+    "fallback_occurred": true,
+    "failures": [
+      {"provider": "gemini-3.8-flash", "category": "timeout", "transient": true}
+    ],
+    "notice": "..."
+  },
+  "timings": {"retrieval_ms": 12.3, "generation_ms": 45.6, "total_ms": 60.1}
+}
+```
+
+Failure metadata never contains raw provider response bodies or credentials.
+An insufficient-evidence response uses mode `insufficient_evidence`, attempts no
+provider, and returns an empty citation list.
+
 ## GET `/repositories/{repository_id}/sources/{source_id}`
 Return source metadata and a bounded snippet for citation inspection.
 
