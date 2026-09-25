@@ -1,7 +1,10 @@
 """Versioned HTTP API for repository ingestion and grounded queries."""
 
 import asyncio
+import logging
+import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
 from urllib.parse import quote
@@ -21,31 +24,46 @@ from repomind.github import GithubClient, GithubError
 from repomind.ingestion import run_job
 from repomind.limits import PostRateLimiter
 from repomind.models import IngestionJob, Message, QuerySession, Repository, Snapshot, SourceFile
-from repomind.providers import LocalEmbedding, answer_provider, valid_citations
+from repomind.providers import (
+    LocalEmbedding,
+    answer_from_evidence,
+    answer_provider,
+    insufficient_evidence_result,
+    valid_citations,
+)
 from repomind.retrieval import retrieve
 from repomind.source import parse_repo_url, validate_ref
 
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
-app = FastAPI(title="RepoMind API", version="0.1.0", description="Repository-aware search and answers")
-app.add_middleware(CORSMiddleware, allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
-                   allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID"])
-rate_limiter = PostRateLimiter(settings.rate_limit_per_minute, settings.global_rate_limit_per_minute)
-query_slots = BoundedSemaphore(settings.max_concurrent_queries)
-embeddings = LocalEmbedding(settings.embedding_model)
 ACTIVE_JOBS = ("PENDING", "FETCHING", "PARSING", "EMBEDDING", "INDEXING")
 
 
-@app.on_event("startup")
-async def restart_interrupted_jobs() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     try:
         with SessionLocal() as db:
             jobs = db.scalars(select(IngestionJob).where(IngestionJob.status.in_(ACTIVE_JOBS))).all()
             ids = [job.id for job in jobs]
     except SQLAlchemyError:
-        return
+        ids = []
     for job_id in ids:
         asyncio.create_task(asyncio.to_thread(run_job, job_id, settings))
+    yield
+
+
+app = FastAPI(
+    title="RepoMind API",
+    version="0.2.0",
+    description="Repository-aware search and answers",
+    lifespan=lifespan,
+)
+app.add_middleware(CORSMiddleware, allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
+                   allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Request-ID"])
+rate_limiter = PostRateLimiter(settings.rate_limit_per_minute, settings.global_rate_limit_per_minute)
+query_slots = BoundedSemaphore(settings.max_concurrent_queries)
+embeddings = LocalEmbedding(settings.embedding_model)
 
 
 class ApiError(Exception):
@@ -219,6 +237,7 @@ def query(repository_id: uuid.UUID, payload: QueryRequest, db: Session = Depends
 
 
 def _query(repository_id: uuid.UUID, payload: QueryRequest, db: Session):
+    total_start = time.perf_counter()
     repo = db.get(Repository, repository_id)
     if repo is None:
         raise ApiError(404, "REPOSITORY_NOT_FOUND", "Repository was not found.")
@@ -242,10 +261,33 @@ def _query(repository_id: uuid.UUID, payload: QueryRequest, db: Session):
     contextual_question = (f"Previous question: {previous.content[:1000]}\nFollow-up: {payload.question}"
                            if previous else payload.question)
     try:
-        evidence, metadata = retrieve(db, snapshot, contextual_question, payload.top_k, embeddings, settings)
-        generated = valid_citations(answer_provider(settings).generate(contextual_question, evidence), evidence)
+        evidence, metadata = retrieve(
+            db,
+            snapshot,
+            contextual_question,
+            payload.top_k,
+            embeddings,
+            settings,
+            gate_question=payload.question,
+        )
+        sufficient = bool(metadata["evidence_gate"]["sufficient"])
+        generation = (
+            answer_from_evidence(
+                contextual_question,
+                evidence,
+                True,
+                answer_provider(settings),
+            )
+            if sufficient
+            else insufficient_evidence_result()
+        )
+        generated = valid_citations(generation.generated, evidence)
     except ValueError as exc:
-        raise ApiError(503, "PROVIDER_NOT_CONFIGURED", str(exc)) from exc
+        raise ApiError(
+            503,
+            "PROVIDER_NOT_CONFIGURED",
+            "The generation provider is not configured correctly.",
+        ) from exc
     except Exception as exc:
         raise ApiError(502, "GENERATION_FAILED", "Retrieval or generation failed. Try again.", True) from exc
     citations = []
@@ -261,6 +303,24 @@ def _query(repository_id: uuid.UUID, payload: QueryRequest, db: Session):
     metadata["sources"] = [{"path": item.file_path, "start_line": item.start_line,
                             "end_line": item.end_line, "score": round(item.score, 4)}
                            for item in evidence] if payload.debug else []
+    generation_metadata = generation.metadata()
+    total_latency = round((time.perf_counter() - total_start) * 1000, 2)
+    timings = {
+        "retrieval_ms": metadata["latency_ms"],
+        "generation_ms": generation.latency_ms,
+        "total_ms": total_latency,
+    }
+    metadata["generation"] = generation_metadata
+    metadata["timings"] = timings
+    logger.info(
+        "query_complete provider=%s mode=%s fallback=%s retrieval_ms=%s generation_ms=%s total_ms=%s",
+        generation.selected_provider,
+        generation.mode,
+        generation.fallback_occurred,
+        metadata["latency_ms"],
+        generation.latency_ms,
+        total_latency,
+    )
     db.add(Message(session_id=session.id, role="user", content=payload.question,
                    citations=[], retrieval_metadata={}))
     db.add(Message(session_id=session.id, role="assistant", content=generated.answer,
@@ -268,7 +328,8 @@ def _query(repository_id: uuid.UUID, payload: QueryRequest, db: Session):
     session.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"answer": generated.answer, "citations": citations,
-            "retrieval": metadata, "session_id": session.id}
+            "retrieval": metadata, "generation": generation_metadata,
+            "timings": timings, "session_id": session.id}
 
 
 @app.get("/api/v1/repositories/{repository_id}/sources/{source_id}", tags=["sources"])
@@ -297,5 +358,7 @@ def session_history(session_id: uuid.UUID, db: Session = Depends(get_db)):
             "messages": [{"role": item.role, "content": item.content,
                           "citations": item.citations,
                           "retrieval": item.retrieval_metadata,
+                          "generation": item.retrieval_metadata.get("generation"),
+                          "timings": item.retrieval_metadata.get("timings"),
                           "created_at": item.created_at}
                          for item in reversed(messages)]}

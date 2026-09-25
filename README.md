@@ -1,47 +1,121 @@
 # RepoMind
 
-RepoMind indexes a public GitHub repository and answers questions with links to the source lines used as evidence. It combines PostgreSQL full-text search with pgvector similarity, then reranks and packs the retrieved chunks before answering. The default local answer mode is extractive and needs no model API key. A Gemini provider can be enabled for prose answers.
+RepoMind is a repository-aware RAG knowledge engine. It indexes a public GitHub
+repository, retrieves relevant source with hybrid search, and answers questions
+with links to the exact file and line ranges used as evidence. It is a developer
+tool for understanding a codebase, not a general-purpose chatbot.
 
-See [implementation architecture](docs/ARCHITECTURE.md) and the [reference specifications](docs/spec/01-PRD.md).
-For changes to this repository, follow the [pull request and CI policy](CONTRIBUTING.md).
+See the [implementation architecture](docs/ARCHITECTURE.md), the
+[reference specifications](docs/spec/01-PRD.md), and the
+[contribution and CI policy](CONTRIBUTING.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Browser[Next.js web] --> API[FastAPI]
-  API --> GitHub[GitHub REST API]
-  API --> DB[(PostgreSQL + pgvector)]
-  API --> Embed[Local sentence embeddings]
-  API --> Answer[Extractive or Gemini answer]
-  GitHub --> API
-  Embed --> DB
-  DB --> Answer
-  Answer --> Browser
+  GitHub[GitHub] --> Ingest[Ingestion]
+  Ingest --> Chunk[Deterministic chunking]
+  Chunk --> Embed[Local embeddings]
+  Embed --> DB[(PostgreSQL + pgvector)]
+  DB --> Lexical[Lexical retrieval]
+  DB --> Semantic[Semantic retrieval]
+  Lexical --> RRF[RRF fusion]
+  Semantic --> RRF
+  RRF --> Rerank[Reranking]
+  Rerank --> Gate[Evidence gate]
+  Gate --> Gemini[Gemini generation]
+  Gemini --> Validate[Citation validation]
+  Validate --> Answer[Grounded answer]
 ```
 
-The API stores repository snapshots, source files, chunks, ingestion jobs, and query sessions. A background job fetches a commit tree, filters unsupported files, chunks text with line ranges, embeds it, and writes the index. Re-indexing the same commit returns the existing snapshot. For a new commit, unchanged GitHub blob SHAs reuse stored content and vectors. Queries run dense and lexical searches independently, merge with reciprocal rank fusion, rerank, and validate citation IDs before returning an answer.
+The API stores repository snapshots, source files, chunks, ingestion jobs, and
+query sessions. Re-indexing the same commit returns its completed snapshot. For a
+new commit, unchanged GitHub blob SHAs reuse stored content and vectors. Query
+retrieval runs pgvector cosine search and PostgreSQL full-text search
+independently, combines candidates with Reciprocal Rank Fusion, reranks them,
+and packs non-overlapping evidence within a bounded context budget.
+
+Before generation, a deterministic evidence-sufficiency gate combines lexical
+query-term coverage, dense similarity, lexical/dense rank agreement, reranker
+overlap, and candidate concentration. A question with no meaningful repository
+term match cannot pass on dense similarity alone. When the gate fails, RepoMind
+returns:
+
+> I don't have enough evidence in the indexed repository to answer that question.
+
+No generation provider is called and the citation list is empty.
+
+## Generation and fallback
+
+```text
+Gemini 3.8 Flash
+        ↓
+Gemini 3.7 Flash
+        ↓
+deterministic grounded fallback
+```
+
+With `LLM_PROVIDER=auto` and a configured server-side Gemini key, RepoMind makes
+one bounded attempt with `gemini-3.8-flash`, then one with
+`gemini-3.7-flash` after a safe, classified provider failure. It does not retry
+either model indefinitely. HTTP 429, 500, 502, 503, and 504 responses, network
+failures, and timeouts are treated as transient. Authentication, malformed
+request, and invalid model errors are recorded as permanent configuration
+failures and are not repeatedly retried.
+
+Gemini uses the current Interactions API structured-output contract. The model
+must return a JSON object containing an answer and citation IDs. RepoMind checks
+that structure, removes any ID or inline citation marker not present in the
+retrieved evidence, and constructs GitHub links only from stored source
+metadata.
+
+The final fallback is deterministic and is **not an LLM**. It selects concise
+evidence lines using fixed rules and renders them with source paths, line ranges,
+symbols where directly present, and citations. It requires no model API key,
+local LLM, Ollama, GPU, or additional paid service.
+
+The UI always shows the selected mode:
+
+- primary AI answer: “Generated with Gemini 3.8 Flash.”
+- fallback AI answer: the unavailable provider and the selected provider
+- deterministic fallback: the failed hosted providers and grounded fallback mode
+- insufficient evidence: a gate status with no provider call
+
+These are neutral status notices; normal fallback is not rendered as an error.
 
 ## Run locally
 
-Requirements: Docker with Compose, Python 3.11, Node.js 22, and npm. The first ingestion downloads the configured Sentence Transformers model; allow network access and enough disk space for the model. Public GitHub ingestion works without a token but has a lower API rate limit.
+Requirements: Docker with Compose, Python 3.11, Node.js 22, and npm. The first
+ingestion downloads the configured Sentence Transformers model, so allow network
+access and enough disk space. Public GitHub ingestion works without a token at a
+lower API rate limit.
 
-1. Copy `.env.example` to `.env`. Keep real keys only in `.env` or deployment secrets.
-2. Start the local stack (its ports bind only to this computer):
+1. Copy `.env.example` to `.env`. Keep real keys only in that ignored file or
+   a deployment secret store.
+2. Choose a generation mode:
+
+   - No Gemini key: set `LLM_PROVIDER=deterministic`.
+   - Automatic hosted chain: set `LLM_PROVIDER=auto` and set
+     `GEMINI_API_KEY`.
+
+3. Start the local stack:
 
    ```bash
    docker compose up --build
    ```
 
-3. Open `http://localhost:3000`. Paste a public `https://github.com/owner/repository` URL and index it. Ask a question after the job completes.
+4. Open `http://localhost:3000`, index a public
+   `https://github.com/owner/repository` URL, and ask a repository question.
 
-The API is at `http://localhost:8000/api/v1`; OpenAPI docs are at `http://localhost:8000/docs`. The API container runs the Alembic migration before starting. Database data lives in the `pgdata` Docker volume.
+The API is at `http://localhost:8000/api/v1`; OpenAPI documentation is at
+`http://localhost:8000/docs`. The API container applies Alembic migrations
+before startup, and PostgreSQL data persists in the `pgdata` Docker volume.
+Local Compose ports bind only to this computer.
 
-The local stack uses a known development database password. Use the separate production Compose file below for a public host.
-
-For host development, start only the database with `docker compose up -d db`, then:
+For host development, start the database and install each application:
 
 ```bash
+docker compose up -d db
 python -m pip install -e "apps/api[dev,local]"
 cd apps/api
 alembic upgrade head
@@ -56,72 +130,177 @@ npm install
 npm run dev
 ```
 
-On Windows PowerShell, set environment values in the terminal or load them from `.env` before starting the host API. The local Compose file supplies its own database URL for container networking and passes the other documented API settings.
+On Windows, use `127.0.0.1` instead of `localhost` in `DATABASE_URL` if the
+local resolver tries IPv6 before Docker's IPv4-only port binding.
 
 ## Configuration
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection | local `repomind` database |
-| `GITHUB_TOKEN` | Optional server-side token for higher GitHub rate limits | empty |
-| `LLM_PROVIDER` | `extractive` or `gemini` | `extractive` |
-| `LLM_API_KEY` | Gemini key; required only with `gemini` | empty |
-| `LLM_MODEL` | Gemini model name | `gemini-2.5-flash` |
+| `GITHUB_TOKEN` | Optional server-side token for GitHub rate-limit headroom | empty |
+| `LLM_PROVIDER` | `auto`, `deterministic`, or legacy `extractive` alias | `auto` |
+| `GEMINI_API_KEY` | Server-side Gemini credential | empty |
+| `GEMINI_API_URL` | Gemini Interactions endpoint | `https://generativelanguage.googleapis.com/v1/interactions` |
+| `GEMINI_PRIMARY_MODEL` | First hosted generation model | `gemini-3.8-flash` |
+| `GEMINI_SECONDARY_MODEL` | Second hosted generation model | `gemini-3.7-flash` |
+| `GEMINI_TIMEOUT_SECONDS` | Per-provider HTTP timeout | `45` |
 | `EMBEDDING_MODEL` | Local Sentence Transformers model | `all-MiniLM-L6-v2` |
-| `EMBEDDING_DIM` | Must match the migration's vector dimension | `384` |
+| `EMBEDDING_DIM` | Must match the migrated vector dimension | `384` |
 | `RERANKER_PROVIDER` | `token_overlap` or `cross_encoder` | `token_overlap` |
 | `RERANKER_MODEL` | Local CrossEncoder model when enabled | `ms-marco-MiniLM-L-6-v2` |
-| `CORS_ORIGINS` | Comma-separated allowed web origins | `http://localhost:3000` |
+| `EVIDENCE_GATE_MIN_SCORE` | Minimum combined gate score | `0.30` |
+| `EVIDENCE_GATE_MIN_SIGNALS` | Minimum independent passing signals | `2` |
+| `EVIDENCE_GATE_MIN_QUERY_TERMS` | Minimum matched meaningful query terms | `1` |
+| `EVIDENCE_GATE_MIN_LEXICAL_COVERAGE` | Lexical signal threshold | `0.20` |
+| `EVIDENCE_GATE_MIN_DENSE_SIMILARITY` | Dense signal threshold | `0.25` |
+| `EVIDENCE_GATE_MIN_RANK_AGREEMENT` | Retrieval agreement threshold | `0.20` |
+| `EVIDENCE_GATE_MIN_RERANKER_OVERLAP` | Top-evidence overlap threshold | `0.20` |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins | `http://localhost:3000` |
 | `RATE_LIMIT_PER_MINUTE` | Per-process, per-IP POST limit | `30` |
 | `GLOBAL_RATE_LIMIT_PER_MINUTE` | Per-process POST limit across clients | `120` |
-| `MAX_ACTIVE_INGESTIONS` | Maximum queued or running indexing jobs across the database | `8` |
-| `MAX_CONCURRENT_QUERIES` | Simultaneous questions accepted by one API process | `4` |
-| `MAX_FILES`, `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_CHUNKS` | Indexing bounds | see `.env.example` |
-| `NEXT_PUBLIC_API_BASE_URL` | Browser API origin | `http://localhost:8000/api/v1` |
+| `MAX_ACTIVE_INGESTIONS` | Database-wide queued/running indexing bound | `8` |
+| `MAX_CONCURRENT_QUERIES` | Simultaneous queries per API process | `4` |
+| `MAX_FILES`, `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES`, `MAX_CHUNKS` | Ingestion bounds | see `.env.example` |
+| `NEXT_PUBLIC_API_BASE_URL` | Browser-visible API origin; never a secret | `http://localhost:8000/api/v1` |
 
-The first migration creates a `vector(384)` column and HNSW/GIN indexes. Change the migration and embedding model together if using another dimension. `/health/ready` reports a schema mismatch.
+The gate thresholds are deliberately configurable. Higher values reduce
+unrelated answers but can reject short symbol lookups; lower values improve
+recall but increase the chance that a weak neighbor passes. The term-match and
+multi-signal requirements prevent one high dense score from deciding alone.
+Identifier tokenization and embedding calibration remain model- and
+repository-dependent.
 
-## API
+## Security
+
+- Gemini and GitHub credentials are loaded only on the server from environment
+  variables or deployment secret stores.
+- `.env` and production environment files are ignored by Git. Committed
+  examples contain empty placeholders only.
+- No `NEXT_PUBLIC_*` variable contains a provider or GitHub secret.
+- API responses and provider logs contain only safe failure categories, never
+  authorization headers, keys, raw provider bodies, prompts, or repository
+  context.
+- Repository content, user questions, GitHub data, and model output are treated
+  as untrusted. Ingestion never executes repository files.
+- `python scripts/check_secrets.py` scans source and example environment files
+  for common committed-secret patterns; CI runs the same check.
+
+If a key may have been exposed elsewhere, rotate it at the provider. A clean
+scan cannot prove a credential was never disclosed.
+
+## API and observability
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/api/v1/repositories/ingest` | Start a database-backed job |
-| GET | `/api/v1/ingestion/{job_id}` | Read progress and errors |
+| GET | `/api/v1/ingestion/{job_id}` | Read progress and safe errors |
 | GET | `/api/v1/repositories/{repository_id}` | Repository metadata |
 | POST | `/api/v1/repositories/{repository_id}/query` | Ask a grounded question |
 | GET | `/api/v1/repositories/{repository_id}/sources/{source_id}` | Inspect bounded source lines |
-| GET | `/api/v1/sessions/{session_id}` | Read recent conversation history |
+| GET | `/api/v1/sessions/{session_id}` | Read recent history |
 | GET | `/api/v1/health/live`, `/api/v1/health/ready` | Health checks |
 
-Errors contain a code, message, retryability flag, and request ID. Query responses include source links and retrieval counts. Enable `debug` in the query request to inspect top evidence paths and scores. Source text is rendered as plain text by the web client, never as executable code or trusted HTML.
+Query metadata records provider attempts, selected provider, fallback status,
+safe failure categories, evidence-gate signals, retrieval latency, generation
+latency, and total latency. Debug mode additionally returns top evidence paths
+and scores. It does not record keys, authorization headers, raw provider errors,
+full prompts, or full source context.
 
-## Test and evaluate
+## Tests
 
 ```bash
-cd apps/api && pytest -q && ruff check . && mypy repomind --ignore-missing-imports
-cd apps/web && npm test && npm run lint && npm run typecheck && npm run build
+cd apps/api
+pytest -q
+ruff check .
+mypy repomind --ignore-missing-imports
+python -m compileall -q . ../../evals
+
+cd ../web
+npm test
+npm run lint
+npm run typecheck
+npm run build
+npm run test:e2e
+
+cd ../..
+python scripts/check_secrets.py
+docker compose config --quiet
 ```
 
-The API tests cover URL parsing, file filtering, deterministic chunks, GitHub tree handling, fusion, citation validation, ingestion idempotence, and database retrieval. CI starts pgvector, migrates from scratch, and runs these tests plus a browser workflow.
+Validate the standalone production file with the placeholder values described
+in `.env.production.example`:
 
-After indexing `prxns/RepoMind`, run `PYTHONPATH=apps/api python evals/run.py --k 5` from the repository root. This computes measured Recall@K, Precision@K, MRR, and nDCG for lexical, vector, hybrid, and hybrid-plus-reranking baselines. Results go to ignored `evals/results/` files. See [evaluation notes](evals/README.md).
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml config --quiet
+```
 
-## Deployment and limits
+Provider tests inject deterministic HTTP failures; they do not repeatedly call
+real Gemini endpoints.
 
-For a public host, use `docker-compose.production.yml` as a **standalone** Compose file. It exposes only an HTTPS gateway; PostgreSQL, the API, and the web server have no host ports. The gateway requires a username and password before forwarding any request. A public DNS name must point to the host, and ports 80 and 443 must reach it so Caddy can obtain a certificate.
+## Evaluation
 
-1. Copy `.env.production.example` to `.env.production`, which Git ignores.
-2. Set a strong `POSTGRES_PASSWORD`. Set `DATABASE_URL` to `postgresql+psycopg://repomind:<URL-encoded password>@db:5432/repomind` using the same password. Set `PUBLIC_DOMAIN` to the DNS name and `PUBLIC_ORIGIN` to `https://` followed by that name.
-3. Set `BASIC_AUTH_USER`. Generate `BASIC_AUTH_HASH` interactively with `docker run --rm -it caddy:2 caddy hash-password`; enter a strong password at its prompt and copy only the resulting hash into `.env.production`.
-4. Validate and start the stack:
+After indexing `prxns/RepoMind`, run from the repository root:
+
+```bash
+PYTHONPATH=apps/api python evals/run.py --k 5
+```
+
+The runner computes measured Recall@K, Precision@K, MRR, and nDCG at source-path
+level for lexical, vector, hybrid, and hybrid-plus-reranking retrieval. It writes
+JSON and Markdown to ignored `evals/results/` files. RepoMind does not ship
+hardcoded benchmark claims; report results only from an actual indexed run. See
+[evaluation notes](evals/README.md).
+
+## Usage and cost
+
+Local deterministic mode and local embeddings do not call a paid generation
+provider. Gemini usage may fall within a provider free tier or may incur charges
+depending on the account, region, model availability, quota, and billing
+configuration. Enabling `GEMINI_API_KEY` is opt-in; RepoMind does not claim
+hosted generation is always free.
+
+## Deployment
+
+`docker-compose.production.yml` is a standalone public deployment. It exposes
+only an authenticated HTTPS Caddy gateway; PostgreSQL, the API, and the web
+container have no host ports.
+
+1. Copy `.env.production.example` to ignored `.env.production`.
+2. Set a strong `POSTGRES_PASSWORD`; use its URL-encoded value in
+   `DATABASE_URL` with host `db`.
+3. Set `PUBLIC_DOMAIN`, `PUBLIC_ORIGIN`, and `BASIC_AUTH_USER`.
+4. Generate `BASIC_AUTH_HASH` interactively with
+   `docker run --rm -it caddy:2 caddy hash-password`.
+5. Add `GEMINI_API_KEY` only if hosted generation is intended.
+6. Validate and start:
 
    ```bash
    docker compose --env-file .env.production -f docker-compose.production.yml config --quiet
    docker compose --env-file .env.production -f docker-compose.production.yml up --build -d
    ```
 
-Open `PUBLIC_ORIGIN` in a browser and sign in at the gateway prompt. The browser calls `/api/v1` on the same HTTPS origin. The API migrates the database before starting. Keep the `pgdata` and `caddy_data` volumes persistent; back up the database and practice restoration before relying on the deployment.
+Back up the `pgdata` volume and practice restoration before relying on the
+deployment.
 
-This configuration runs one API process. Its request and question limits are held in that process, while indexing admission and per-repository execution are coordinated in PostgreSQL. Multiple API replicas need a shared request limiter and a durable worker before scaling. Public repositories only; private OAuth, webhook sync, and repository code execution are out of scope. The default extractive mode surfaces evidence rather than synthesizing a prose explanation.
+## Screenshots
 
-Screenshots may be added after a real capture under `docs/screenshots/`.
+![RepoMind query workspace with grounded fallback status](docs/screenshots/repomind-workspace.png)
+
+The screenshot is captured from the local web application with mocked provider
+failures and public example source; it contains no credential.
+
+## Limitations
+
+- Public GitHub repositories only; private OAuth and webhook sync are out of scope.
+- Ingestion jobs run inside one API process. Multiple replicas need a durable
+  worker and shared request limiter.
+- The default vector schema is fixed at 384 dimensions; changing embedding
+  dimensions requires a matching migration.
+- The evidence gate is deterministic but heuristic. Very short identifiers,
+  synonyms with no lexical overlap, or unusually calibrated embeddings can
+  produce false abstentions or weak passes.
+- Citation validation guarantees source identity and line ranges, not that every
+  generated sentence is semantically correct. Users can inspect the source.
+- Model availability, free-tier eligibility, billing, and regional access are
+  controlled by the Gemini provider.

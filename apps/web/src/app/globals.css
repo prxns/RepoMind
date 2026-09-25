@@ -86,6 +86,13 @@ a { color: var(--accent-dark); }
 .suggestions button:hover { border-color: #98b5a5; background: #fcfdfc; }
 .answer-section { margin-top: 42px; border-top: 1px solid var(--line); padding-top: 25px; }
 .section-label { display: flex; justify-content: space-between; color: #6a7a70; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
+.generation-notice { display: flex; align-items: baseline; gap: 12px; max-width: 760px; margin-top: 18px; padding: 10px 12px; border: 1px solid #cad8d0; border-left: 3px solid var(--accent); border-radius: 4px; background: #f1f6f3; color: #425149; }
+.generation-notice > span { flex: none; color: var(--accent-dark); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.generation-notice p { margin: 0; font-size: 12px; line-height: 1.5; }
+.generation-fallback_ai, .generation-deterministic { border-color: #d9d3bc; border-left-color: #8b7441; background: #faf8ef; }
+.generation-fallback_ai > span, .generation-deterministic > span { color: #6e592d; }
+.generation-insufficient_evidence { border-color: #ccd4d0; border-left-color: #718077; background: #f4f6f5; }
+.generation-insufficient_evidence > span { color: #58665f; }
 .answer-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.75; margin: 23px 0 37px; max-width: 760px; }
 .sources-heading { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
 .sources-heading h2 { font-size: 15px; margin: 0; }
@@ -130,4 +137,6 @@ a { color: var(--accent-dark); }
   .source-heading { align-items: flex-start; }
   .source-toggle { gap: 7px; flex-wrap: wrap; }
   .source-heading a { margin-top: 14px; }
+  .generation-notice { display: block; }
+  .generation-notice p { margin-top: 5px; }
 }

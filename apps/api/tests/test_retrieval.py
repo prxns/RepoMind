@@ -1,15 +1,22 @@
 import uuid
 from types import SimpleNamespace
 
+from repomind.config import Settings
 from repomind.providers import Evidence, GeneratedAnswer, valid_citations
-from repomind.retrieval import Candidate, pack_context, reciprocal_rank_fusion, rerank
+from repomind.retrieval import (
+    Candidate,
+    evidence_sufficiency,
+    pack_context,
+    reciprocal_rank_fusion,
+    rerank,
+)
 
 
-def candidate(name: str, text: str) -> Candidate:
+def candidate(name: str, text: str, score: float = 0.0) -> Candidate:
     chunk = SimpleNamespace(id=uuid.uuid5(uuid.NAMESPACE_DNS, name), content=text,
                             start_line=1, end_line=4)
     source = SimpleNamespace(id=uuid.uuid5(uuid.NAMESPACE_DNS, name + "source"), path=name)
-    return Candidate(chunk, source, 0.0)
+    return Candidate(chunk, source, score)
 
 
 def test_rrf_rewards_results_in_both_pools():
@@ -33,3 +40,48 @@ def test_invalid_citation_markers_are_removed():
     result = valid_citations(GeneratedAnswer("Login is here [S1]. Ignore [S99].", ["S1", "S99"]), evidence)
     assert result.citation_ids == ["S1"]
     assert "[S99]" not in result.answer
+
+
+def test_evidence_gate_accepts_agreeing_relevant_signals():
+    item = candidate(
+        "retrieval.py",
+        "def reciprocal_rank_fusion(dense, lexical): return fused_results",
+        0.82,
+    )
+    fused = reciprocal_rank_fusion([[item], [item]])
+    selected = pack_context(fused, 1000, 3)
+
+    result = evidence_sufficiency(
+        "How are dense and lexical results fused?",
+        selected,
+        [item],
+        [item],
+        fused,
+        Settings(_env_file=None),
+    )
+
+    assert result["sufficient"] is True
+    assert result["positive_signal_count"] >= 2
+    assert result["matched_query_terms"] >= 2
+
+
+def test_evidence_gate_rejects_unrelated_dense_neighbor():
+    item = candidate(
+        "retrieval.py",
+        "def reciprocal_rank_fusion(dense, lexical): return fused_results",
+        0.91,
+    )
+    selected = pack_context([item], 1000, 3)
+
+    result = evidence_sufficiency(
+        "Who is the current CEO of Microsoft?",
+        selected,
+        [item],
+        [],
+        [item],
+        Settings(_env_file=None),
+    )
+
+    assert result["sufficient"] is False
+    assert result["reason"] == "no_query_term_match"
+    assert result["matched_query_terms"] == 0

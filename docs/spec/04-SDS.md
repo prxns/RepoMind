@@ -45,8 +45,8 @@ Question
  -> RRF / hybrid fusion
  -> rerank
  -> context packing
- -> grounded prompt
- -> generation
+ -> evidence sufficiency gate
+ -> Gemini 3.8 / Gemini 3.7 / deterministic fallback
  -> citation validation
  -> response
 ```
@@ -126,6 +126,19 @@ The LLM instruction must require:
 - return citation IDs corresponding only to supplied context
 
 After generation, validate citation IDs and discard invalid references rather than inventing them.
+
+Generation uses the ordered provider chain `gemini-3.8-flash`,
+`gemini-3.7-flash`, then a deterministic evidence-only formatter. The hosted
+models use strict structured JSON output. Each provider is attempted at most
+once per query. Safe provider selection, failure classification, and latency
+metadata are stored with the response; raw provider bodies and credentials are
+not stored.
+
+The evidence gate runs before this chain. It combines lexical term coverage,
+dense similarity, retrieval-method agreement, reranker overlap, and candidate
+concentration. It requires multiple configured signals plus meaningful query
+term overlap. A failed gate returns the standard insufficient-evidence answer,
+no citations, and no provider call.
 
 ## 9. Query response shape
 ```json

@@ -28,12 +28,13 @@ class TreeFile:
 class GithubClient:
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
+        github_token = settings.github_token.get_secret_value()
         self.client = client or httpx.Client(
             base_url=settings.github_api_url.rstrip("/"), timeout=20,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "RepoMind/0.1",
-                **({"Authorization": f"Bearer {settings.github_token}"} if settings.github_token else {}),
+                **({"Authorization": f"Bearer {github_token}"} if github_token else {}),
             },
         )
 
